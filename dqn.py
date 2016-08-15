@@ -97,7 +97,8 @@ class DQNAgent():
             for i in range(KIND_OF_PAI):
                 if seq[i]>=1.:
                     dummyactions.append(i) # 選ばれてほしい系の選択肢をのこす
-            action = np.random.choice(np.array(dummyactions))
+            if len(dummyactions)>0:
+	            action = np.random.choice(np.array(dummyactions))
         else:
             # greedy
             action= self.get_greedy_action(seq)
@@ -174,23 +175,23 @@ class pendulumEnvironment():
     def __init__(self):
         self.pais = np.zeros(KIND_OF_PAI*4)
         for i in range(9):
-            pais[i  ] = i+1
-            pais[i+1] = i+1
-            pais[i+2] = i+1
-            pais[i+3] = i+1
-            pais[(i+9)*4  ] = i + 11
-            pais[(i+9)*4+1] = i + 11
-            pais[(i+9)*4+2] = i + 11
-            pais[(i+9)*4+3] = i + 11
-            pais[(i+18)*4  ] = i + 21
-            pais[(i+18)*4+1] = i + 21
-            pais[(i+18)*4+2] = i + 21
-            pais[(i+18)*4+3] = i + 21
+            self.pais[i  ] = i+1
+            self.pais[i+1] = i+1
+            self.pais[i+2] = i+1
+            self.pais[i+3] = i+1
+            self.pais[(i+9)*4  ] = i + 11
+            self.pais[(i+9)*4+1] = i + 11
+            self.pais[(i+9)*4+2] = i + 11
+            self.pais[(i+9)*4+3] = i + 11
+            self.pais[(i+18)*4  ] = i + 21
+            self.pais[(i+18)*4+1] = i + 21
+            self.pais[(i+18)*4+2] = i + 21
+            self.pais[(i+18)*4+3] = i + 21
         for i in range(7):
-            pais[(i+27)*4  ] = i + 31
-            pais[(i+27)*4+1] = i + 31
-            pais[(i+27)*4+2] = i + 31
-            pais[(i+27)*4+3] = i + 31
+            self.pais[(i+27)*4  ] = i + 31
+            self.pais[(i+27)*4+1] = i + 31
+            self.pais[(i+27)*4+2] = i + 31
+            self.pais[(i+27)*4+3] = i + 31
         self.tehai = np.zeros(PAI_SIZE) # 手牌 四人ならこれがあと4ついるはず
         self.hou = np.zeros(PAI_SIZE) # 河の牌
         self.sya = syanten.Syanten()
@@ -205,7 +206,7 @@ class pendulumEnvironment():
         for i in range(PAI_SIZE):
             self.tehai[i] = 0
             self.hou[i] = 0
-        random.shuffle(self.pais)
+        np.random.shuffle(self.pais)
         for i in range(13):
             self.tehai[self.pais[i]] += 1
         self.pais_position = 13
@@ -258,8 +259,8 @@ class pendulumEnvironment():
             assert x<0, "error tehai"
         for x in self.hou:
             assert x>4, "error hou"
-    def tumo()
-        self.tehai[pais[self.pais_position]] += 1
+    def tumo(self):
+        self.tehai[self.pais[self.pais_position]] += 1
         self.pais_position += 1
 
     def get_svg(self):
@@ -288,7 +289,7 @@ class simulator:
         self.seq=np.zeros(self.num_seq)
 
     def push_seq(self, state):
-        self.seq = (state+self.seq)[0:self.num_seq]
+        self.seq = (np.append(state,self.seq))[0:self.num_seq]
         #self.seq[INPUT_NODE:self.num_seq]=self.seq[0:self.num_seq-INPUT_NODE]
 
     def run(self, train=True, movie=False, enableLog=False):
@@ -297,6 +298,10 @@ class simulator:
 
         self.reset_seq()
         total_reward=0
+        
+        # init seq
+        state = self.env.get_state()
+        self.push_seq(state)
 
         # 一人麻雀では自摸回数は27回
         for i in range(27):
