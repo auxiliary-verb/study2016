@@ -1,6 +1,8 @@
 # coding: utf-8
 import numpy as np
 
+import sys
+
 import chainer
 from chainer import cuda, Function, gradient_check, Variable, optimizers, serializers, utils
 from chainer import Link, Chain, ChainList
@@ -25,6 +27,49 @@ INPUT_NODE = (  KIND_OF_PAI +   KIND_OF_PAI     ) * STATE_NUM
 
 # 出力ノード数
 OUTPUT_NODE =   KIND_OF_PAI
+
+test_highscore = 0
+
+def act2PaiNumber(action):
+    if action<9:
+        return action+1
+    elif action<18:
+        return action+2
+    elif action<27:
+        return action+3
+    elif action<34:
+        return action+4
+
+def pais2act(pais):
+    act = [0]*KIND_OF_PAI
+    for i in range(9):
+        act[i   ] = pais[i+1]
+        act[i+9 ] = pais[i+11]
+        act[i+18] = pais[i+21]
+    for i in range(7):
+        act[i+27] = pais[i+31]
+    return act
+
+def score(sim,loop=100):
+    global test_highscore
+    total_reward = 0
+    for i in range(loop):
+        total_reward +=sim.run(train=False, movie=False)
+    total_reward/=loop
+    if test_highscore<total_reward:
+        print "highscore!",
+        #serializers.save_npz('model/%06d_hs.model'%i, agent.model)
+        test_highscore=total_reward
+    print
+    print total_reward,
+    print "epsilon:%2.2e" % agent.get_epsilon(),
+    print "loss:%2.2e" % agent.loss
+    #aw=agent.total_reward_award
+    #print "min:%d,max:%d" % (np.min(aw),np.max(aw))
+
+    out="%d,%d,%2.2e,%2.2e\n" % (i,total_reward,agent.get_epsilon(),agent.loss)
+    fw.write(out)
+    fw.flush()
 
 # DQN内部で使われるニューラルネット
 class Q(Chain):
@@ -70,9 +115,10 @@ class DQNAgent():
         # seq後の行動価値を返す
         x = Variable(np.hstack([seq]).astype(np.float32).reshape((1,-1)))
         out = self.model.predict(x).data[0]
-        for i in range(KIND_OF_PAI):
+        for i in range(OUTPUT_NODE):
             if seq[i]<1.:
-                out[i] = -30. # 選ばれちゃいけない系の選択肢は潰す
+                out[i] = -10000. # 選ばれちゃいけない系の選択肢は潰す
+        #print out
         return out
 
     def get_greedy_action(self, seq):
@@ -97,8 +143,9 @@ class DQNAgent():
             for i in range(KIND_OF_PAI):
                 if seq[i]>=1.:
                     dummyactions.append(i) # 選ばれてほしい系の選択肢をのこす
-            if len(dummyactions)>0:
-	            action = np.random.choice(np.array(dummyactions))
+            assert len(dummyactions)>0, "error seq"
+            #print dummyactions
+            action = np.random.choice(np.array(dummyactions))
         else:
             # greedy
             action= self.get_greedy_action(seq)
@@ -173,12 +220,12 @@ class pendulumEnvironment():
     麻雀の環境
     '''
     def __init__(self):
-        self.pais = np.zeros(KIND_OF_PAI*4)
+        self.pais = np.zeros(KIND_OF_PAI*4,dtype=int)
         for i in range(9):
-            self.pais[i  ] = i+1
-            self.pais[i+1] = i+1
-            self.pais[i+2] = i+1
-            self.pais[i+3] = i+1
+            self.pais[i*4  ] = i+1
+            self.pais[i*4+1] = i+1
+            self.pais[i*4+2] = i+1
+            self.pais[i*4+3] = i+1
             self.pais[(i+9)*4  ] = i + 11
             self.pais[(i+9)*4+1] = i + 11
             self.pais[(i+9)*4+2] = i + 11
@@ -192,10 +239,18 @@ class pendulumEnvironment():
             self.pais[(i+27)*4+1] = i + 31
             self.pais[(i+27)*4+2] = i + 31
             self.pais[(i+27)*4+3] = i + 31
-        self.tehai = np.zeros(PAI_SIZE) # 手牌 四人ならこれがあと4ついるはず
-        self.hou = np.zeros(PAI_SIZE) # 河の牌
+        self.tehai = np.zeros(PAI_SIZE,dtype=int) # 手牌 四人ならこれがあと4ついるはず
+        self.hou = np.zeros(PAI_SIZE,dtype=int) # 河の牌
         self.sya = syanten.Syanten()
         self.reset(0,0)
+        self.syanten = self.get_syanten()
+
+    def get_syanten(self):
+        '''
+        シャンテン数を返す 値次第で和了
+        '''
+        self.sya.set_tehai(self.tehai.tolist())#.tolist()
+        return min(self.sya.NormalSyanten(), self.sya.KokusiSyanten(), self.sya.TiitoituSyanten())
 
     def reset(self,initial_theta, initial_dtheta):
         #self.th          = initial_theta
@@ -211,7 +266,7 @@ class pendulumEnvironment():
             self.tehai[self.pais[i]] += 1
         self.pais_position = 13
 
-    def get_reward(self,agent):
+    def get_reward(self):
         '''
         高さプラスなら5倍ボーナスで高さに比例した正の報酬
         マイナスなら低さに比例した負の報酬
@@ -225,22 +280,13 @@ class pendulumEnvironment():
             reward= -np.abs(h)
         return reward
         '''
-        self.sya.set_tehai(self.tehai)
-
-    def get_syanten(self):
-        '''
-        シャンテン数を返す 値次第で和了
-        '''
-        self.sya.set_tehai(self.tehai)
-        out = np.zeros(3)
-        out[0] = self.sya.NormalSyanten()
-        out[1] = self.sya.KokusiSyanten()
-        out[2] = self.sya.TiitoituSyanten()
-        return np.max(out)
+        oldsyanten = self.syanten
+        self.syanten = self.get_syanten()
+        return oldsyanten - self.syanten
 
     def get_state(self):
         # 一人麻雀なら状態は手牌+河で 手牌は本来順序によって変化するべき
-        return self.tehai + self.hou 
+        return pais2act(self.tehai) + pais2act(self.hou) 
 
     def update_state(self, action):
         '''
@@ -253,12 +299,17 @@ class pendulumEnvironment():
         self.th_old = self.th
         self.th += self.th_
         '''
+
+        #print self.tehai
+        #print self.hou
         self.tehai[action] -= 1
         self.hou[action] += 1
+        #print self.tehai
+        #print self.hou
         for x in self.tehai:
-            assert x<0, "error tehai"
+            assert x>-1, "error tehai"
         for x in self.hou:
-            assert x>4, "error hou"
+            assert x<5, "error hou"
     def tumo(self):
         self.tehai[self.pais[self.pais_position]] += 1
         self.pais_position += 1
@@ -307,12 +358,13 @@ class simulator:
         for i in range(27):
             # 麻雀の特性上エージェントの一人は行動前に環境が変化する
             self.env.tumo()
-
+            if self.env.get_syanten() == -1:
+                return 1
             # 現在のstateからなるシーケンスを保存
             old_seq = self.seq.copy()
 
             # エージェントの行動を決める
-            action = self.agent.get_action(old_seq,train)
+            action = act2PaiNumber(self.agent.get_action(old_seq,train))
 
             # 環境に行動を入力する
             self.env.update_state(action)
@@ -337,7 +389,6 @@ class simulator:
                 time.sleep(0.01)
             '''
 
-
         # エピソードローカルなメモリ内容をグローバルなメモリに移す
         self.agent.experience_global(total_reward)
 
@@ -348,11 +399,12 @@ class simulator:
 
         if enableLog:
             return total_reward,self.log
-
-        return total_reward
+        return 0
+        #return total_reward
 
 
 if __name__ == '__main__':
+    #global test_highscore
     agent=DQNAgent()
     env=pendulumEnvironment()
     sim=simulator(env,agent)
@@ -362,25 +414,15 @@ if __name__ == '__main__':
     fw=open("log.csv","w")
 
     for i in range(30000):
+        sys.stdout.write("\rtest%d"%i)
+        sys.stdout.flush()
+        #print "test%d"%i
         total_reward=sim.run(train=True, movie=False)
-
+        """
         if i%1000 ==0:
             serializers.save_npz('model/%06d.model'%i, agent.model)
-
-        if i%10 == 0:
-            total_reward=sim.run(train=False, movie=False)
-            if test_highscore<total_reward:
-                print "highscore!",
-                serializers.save_npz('model/%06d_hs.model'%i, agent.model)
-                test_highscore=total_reward
-            print i,
-            print total_reward,
-            print "epsilon:%2.2e" % agent.get_epsilon(),
-            print "loss:%2.2e" % agent.loss,
-            aw=agent.total_reward_award
-            print "min:%d,max:%d" % (np.min(aw),np.max(aw))
-
-            out="%d,%d,%2.2e,%2.2e,%d,%d\n" % (i,total_reward,agent.get_epsilon(),agent.loss, np.min(aw),np.max(aw))
-            fw.write(out)
-            fw.flush()
+        """
+        # 回せるようにはなったが評価用の関数がない
+        if i%100 == 0:
+            score(sim)
     fw.close
