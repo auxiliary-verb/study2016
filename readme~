@@ -1,7 +1,5 @@
 syanten.soはとつげき東北氏のコードを使用し、Boost.Pythonでライブラリ化したものです
 http://cmj3.web.fc2.com/#syanten
 
-testnn.h
-ニューラルネットワークをc++でできないかの試み
 
 g++ -std=c++11 -I`python -c 'from distutils.sysconfig import *; print get_python_inc()'` -DPIC -shared -fPIC -o syanten.so syanten.cpp -lboost_python

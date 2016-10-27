@@ -6,11 +6,22 @@ import sys
 import chainer
 from chainer import cuda, Function, gradient_check, Variable, optimizers, serializers, utils
 from chainer import Link, Chain, ChainList
+
+import cupy as xp
 import chainer.functions as F
 import chainer.links as L
 
 import syanten
 
+import argparse
+
+'''
+if gpu :
+    xp = cupy
+else:
+    xp = numpy
+'''
+np.random.seed(0)
 np.random.seed(0)
 
 # 牌の種類数
@@ -22,13 +33,15 @@ PAI_SIZE = 38
 # 過去何コマを見るか
 STATE_NUM = 1
 
-# 入力ノード 数   手牌              捨て牌         = 68
-INPUT_NODE = (  KIND_OF_PAI +   KIND_OF_PAI     ) * STATE_NUM
+# 入力ノード 数   手牌              捨て牌              = 68
+INPUT_NODE = (  KIND_OF_PAI +   KIND_OF_PAI ) * 4    * STATE_NUM
 
 # 出力ノード数
 OUTPUT_NODE =   KIND_OF_PAI
 
 test_highscore = 0
+
+OUTPUT_FRAME = 10000
 
 def act2PaiNumber(action):
     if action<9:
@@ -41,7 +54,7 @@ def act2PaiNumber(action):
         return action+4
 
 def pais2act(pais):
-    act = [0]*KIND_OF_PAI
+    act = np.zeros(KIND_OF_PAI)
     for i in range(9):
         act[i   ] = pais[i+1]
         act[i+9 ] = pais[i+11]
@@ -50,9 +63,9 @@ def pais2act(pais):
         act[i+27] = pais[i+31]
     return act
 
-def score(sim,loop=100):
+def score(index,sim,loop=100):
     global test_highscore
-    total_reward = 0
+    total_reward = 0.
     for i in range(loop):
         total_reward +=sim.run(train=False, movie=False)
     total_reward/=loop
@@ -63,11 +76,12 @@ def score(sim,loop=100):
     print
     print total_reward,
     print "epsilon:%2.2e" % agent.get_epsilon(),
-    print "loss:%2.2e" % agent.loss
+    print "loss:%2.2e" % agent.outloss
+    agent.outloss = 0
     #aw=agent.total_reward_award
     #print "min:%d,max:%d" % (np.min(aw),np.max(aw))
 
-    out="%d,%d,%2.2e,%2.2e\n" % (i,total_reward,agent.get_epsilon(),agent.loss)
+    out="%d,%2.2e,%2.2e,%2.2e\n" % (index,total_reward,agent.get_epsilon(),agent.outloss)
     fw.write(out)
     fw.flush()
 
@@ -75,55 +89,70 @@ def score(sim,loop=100):
 class Q(Chain):
     def __init__(self,state_num=INPUT_NODE*STATE_NUM):
         super(Q,self).__init__(
-             l1=L.Linear(state_num, 1024),  # stateがインプット
-             l2=L.Linear(1024, 512),
-             l3=L.Linear(512, 256),
-             l4=L.Linear(256, 128),
-             l5=L.Linear(128, OUTPUT_NODE), # 出力2チャネル(Qvalue)がアウトプット
+             l1=L.Linear(state_num, 4096),  # stateがインプット
+             l2=L.Linear(4096, 1024),
+             l3=L.Linear(1024, 512),
+             l4=L.Linear(512, OUTPUT_NODE), # 出力2チャネル(Qvalue)がアウトプット
         )
-
-    def __call__(self,x,t):
-        return F.mean_squared_error(self.predict(x,train=True),t)
-
-    def  predict(self,x,train=False):
+    
+    '''
+    def  __call__(self,x):
         h1 = F.leaky_relu(self.l1(x))
         h2 = F.leaky_relu(self.l2(h1))
         h3 = F.leaky_relu(self.l3(h2))
-        h4 =  F.leaky_relu(self.l4(h3))
-        y = F.leaky_relu(self.l5(h4))
+        y =  F.leaky_relu(self.l4(h3))
         return y
+    '''
+    def __call__(self,x,t,ratio):
+        return F.mean_squared_error(self.predict(x,train=True,ratio = ratio),t)
+
+    def  predict(self,x,train=False, ratio = 0.5):
+        h1 = F.dropout(F.leaky_relu(self.l1(x)),train = train, ratio = ratio)
+        h2 = F.dropout(F.leaky_relu(self.l2(h1)),train = train, ratio = ratio)
+        h3 = F.dropout(F.leaky_relu(self.l3(h2)),train = train, ratio = ratio)
+        y =  self.l4(h3)
+        return y
+    #'''
 
 # DQNアルゴリズムにしたがって動作するエージェント
 class DQNAgent():
-    def __init__(self, epsilon=0.99):
+    def __init__(self, args, epsilon=0.99):
         self.model = Q()
+        #model = L.Classifier(MLP(784, args.unit, 10))
+        if args.gpu >= 0:
+            chainer.cuda.get_device(args.gpu).use()  # Make a specified GPU current
+            self.model.to_gpu()  # Copy the model to the GPU
+
         self.optimizer = optimizers.Adam()
         self.optimizer.setup(self.model)
         self.epsilon = epsilon # ランダムアクションを選ぶ確率
-        self.actions=range(KIND_OF_PAI) #　行動の選択肢
+        self.actions=np.array(range(KIND_OF_PAI)) #　行動の選択肢
         self.experienceMemory = [] # 経験メモリ
-        self.memSize = 300*100  # 経験メモリのサイズ(300サンプリングx100エピソード)
+        self.memSize = 27*10000  # 経験メモリのサイズ(300サンプリングx100エピソード)
         self.experienceMemory_local=[] # 経験メモリ（エピソードローカル）
         self.memPos = 0 #メモリのインデックス
-        self.batch_num = 32 # 学習に使うバッチサイズ
+        
+        self.batch_num = 100 # 学習に使うバッチサイズ
+        
         self.gamma = 0.9       # 割引率
         self.loss=0
+        self.outloss = 0
 
         #self.total_reward_award=np.ones(100)*-1000 #100エピソード
 
     def get_action_value(self, seq):
         # seq後の行動価値を返す
-        x = Variable(np.hstack([seq]).astype(np.float32).reshape((1,-1)))
-        out = self.model.predict(x).data[0]
+        x = Variable(cuda.to_gpu(np.hstack([seq]).astype(np.float32).reshape((1,-1))))
+        out = self.model.predict(x).data[0].copy()
         for i in range(OUTPUT_NODE):
             if seq[i]<1.:
-                out[i] = -10000. # 選ばれちゃいけない系の選択肢は潰す
+                out[i] = -float("inf") # 選ばれちゃいけない系の選択肢は潰す
         #print out
         return out
 
     def get_greedy_action(self, seq):
         action_index = np.argmax(self.get_action_value(seq))
-        return self.actions[action_index]
+        return self.actions[int(action_index)]
 
     def reduce_epsilon(self):
         self.epsilon-=1.0/1000000
@@ -153,6 +182,8 @@ class DQNAgent():
 
     def experience_local(self,old_seq, action, reward, new_seq):
         #エピソードローカルな記憶
+        #np.append(old_seq,actioin),
+        #self.experienceMemory_local
         self.experienceMemory_local.append( np.hstack([old_seq,action,reward,new_seq]) )
 
     def experience_global(self,total_reward):
@@ -196,7 +227,7 @@ class DQNAgent():
         memsize=len(self.experienceMemory)
         batch_index = list(np.random.randint(0,memsize,(self.batch_num)))
         batch =np.array( [self.experienceMemory[i] for i in batch_index ])
-        x = Variable(batch[:,0:INPUT_NODE].reshape( (self.batch_num,-1)).astype(np.float32))
+        x = Variable(cuda.to_gpu(batch[:,0:INPUT_NODE].reshape( (self.batch_num,-1)).astype(np.float32)))
         targets=self.model.predict(x).data.copy()
 
         for i in range(self.batch_num):
@@ -206,12 +237,13 @@ class DQNAgent():
             ai=int((a+1)/2) #±1 をindex(0,1)に
             new_seq= batch[i,(INPUT_NODE+2):(INPUT_NODE*2+2)]
             targets[i,ai]=( r+ self.gamma * np.max(self.get_action_value(new_seq)))
-        t = Variable(np.array(targets).reshape((self.batch_num,-1)).astype(np.float32)) 
+        t = Variable(xp.array(targets).reshape((self.batch_num,-1)).astype(xp.float32))
 
         # ネットの更新
         self.model.zerograds()
-        loss=self.model(x ,t)
+        loss=self.model(x ,t,self.epsilon*0.5)
         self.loss = loss.data
+        self.outloss += loss.data/OUTPUT_FRAME
         loss.backward()
         self.optimizer.update()
 
@@ -263,7 +295,9 @@ class pendulumEnvironment():
             self.hou[i] = 0
         np.random.shuffle(self.pais)
         for i in range(13):
-            self.tehai[self.pais[i]] += 1
+            index = self.pais[i]
+            #print int(index)
+            self.tehai[int(index)] += 1
         self.pais_position = 13
 
     def get_reward(self):
@@ -286,7 +320,28 @@ class pendulumEnvironment():
 
     def get_state(self):
         # 一人麻雀なら状態は手牌+河で 手牌は本来順序によって変化するべき
-        return pais2act(self.tehai) + pais2act(self.hou) 
+        dtehai = pais2act(self.tehai)
+        dhou = pais2act(self.hou)
+        out = np.zeros(INPUT_NODE)
+        for j in range(len(dtehai)):
+            if dtehai[j]>0:
+                out[j] = 1
+            if dtehai[j]>1:
+                out[j + (KIND_OF_PAI +   KIND_OF_PAI)*1] = 1
+            if dtehai[j]>2:
+                out[j + (KIND_OF_PAI +   KIND_OF_PAI)*2] = 1
+            if dtehai[j]>3:
+                out[j + (KIND_OF_PAI +   KIND_OF_PAI)*3] = 1
+
+            if dhou[j]>0:
+                out[j + KIND_OF_PAI] = 1
+            if dhou[j]>1:
+                out[j + KIND_OF_PAI + (KIND_OF_PAI +   KIND_OF_PAI)*1] = 1
+            if dhou[j]>2:
+                out[j + KIND_OF_PAI + (KIND_OF_PAI +   KIND_OF_PAI)*2] = 1
+            if dhou[j]>3:
+                out[j + KIND_OF_PAI + (KIND_OF_PAI +   KIND_OF_PAI)*3] = 1
+        return out 
 
     def update_state(self, action):
         '''
@@ -302,14 +357,14 @@ class pendulumEnvironment():
 
         #print self.tehai
         #print self.hou
-        self.tehai[action] -= 1
-        self.hou[action] += 1
+        self.tehai[int(action)] -= 1
+        self.hou[int(action)] += 1
         #print self.tehai
         #print self.hou
         for x in self.tehai:
-            assert x>-1, "error tehai"
+            assert x>-1, "error tehai {}".format(self.tehai)
         for x in self.hou:
-            assert x<5, "error hou"
+            assert x<5, "error hou {}".format(self.hou)
     def tumo(self):
         self.tehai[self.pais[self.pais_position]] += 1
         self.pais_position += 1
@@ -340,11 +395,15 @@ class simulator:
         self.seq=np.zeros(self.num_seq)
 
     def push_seq(self, state):
-        self.seq = (np.append(state,self.seq))[0:self.num_seq]
+        for i in range(self.seq.size-state.size):
+            self.seq[self.seq.size-i]=self.seq[self.seq.size-state.size-i]
+        for i in range(state.size):
+            self.seq[i]=state[i]
+        #self.seq = (np.append(state,self.seq))[0:self.num_seq]
         #self.seq[INPUT_NODE:self.num_seq]=self.seq[0:self.num_seq-INPUT_NODE]
 
     def run(self, train=True, movie=False, enableLog=False):
-
+        agari = 0
         self.env.reset(0,0)
 
         self.reset_seq()
@@ -358,10 +417,15 @@ class simulator:
         for i in range(27):
             # 麻雀の特性上エージェントの一人は行動前に環境が変化する
             self.env.tumo()
-            if self.env.get_syanten() == -1:
-                return 1
+
             # 現在のstateからなるシーケンスを保存
             old_seq = self.seq.copy()
+            new_seq = self.seq.copy()
+            action = 0
+            if self.env.get_syanten() == -1: ############################################################
+                agari = 1
+                reward = 1
+                break
 
             # エージェントの行動を決める
             action = act2PaiNumber(self.agent.get_action(old_seq,train))
@@ -399,30 +463,64 @@ class simulator:
 
         if enableLog:
             return total_reward,self.log
-        return 0
+        return agari
         #return total_reward
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Chainer example: MNIST')
+    parser.add_argument('--batchsize', '-b', type=int, default=100,
+                        help='Number of images in each mini batch')
+    parser.add_argument('--epoch', '-e', type=int, default=20,
+                        help='Number of sweeps over the dataset to train')
+    parser.add_argument('--gpu', '-g', type=int, default=-1,
+                        help='GPU ID (negative value indicates CPU)')
+    parser.add_argument('--out', '-o', default='result',
+                        help='Directory to output the result')
+    parser.add_argument('--resume', '-r', default='',
+                        help='Resume the training from snapshot')
+    parser.add_argument('--unit', '-u', type=int, default=1000,
+                        help='Number of units')
+    args = parser.parse_args()
+
+    print('GPU: {}'.format(args.gpu))
+    print('# unit: {}'.format(args.unit))
+    print('# Minibatch-size: {}'.format(args.batchsize))
+    print('# epoch: {}'.format(args.epoch))
+    print('')
+
+    # Set up a neural network to train
+    # Classifier reports softmax cross entropy loss and accuracy at every
+    # iteration, which will be used by the PrintReport extension below.
+    
+
     #global test_highscore
-    agent=DQNAgent()
+    agent=DQNAgent(args)
     env=pendulumEnvironment()
     sim=simulator(env,agent)
 
     test_highscore=0
 
     fw=open("log.csv","w")
-
-    for i in range(30000):
+    tumo_cnt = 0
+    for i in xrange(30000000):
+        '''
         sys.stdout.write("\rtest%d"%i)
         sys.stdout.flush()
+        '''
         #print "test%d"%i
         total_reward=sim.run(train=True, movie=False)
+        tumo_cnt += total_reward
         """
         if i%1000 ==0:
             serializers.save_npz('model/%06d.model'%i, agent.model)
         """
-        # 回せるようにはなったが評価用の関数がない
-        if i%100 == 0:
-            score(sim)
+        
+        if i%OUTPUT_FRAME == 0:
+            print "test%d"%i
+            score(i,sim,100)
+            print tumo_cnt
+    print "test30000000"
+    score(i,sim,100)
+    print tumo_cnt
     fw.close
