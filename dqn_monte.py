@@ -43,6 +43,14 @@ test_highscore = 0
 
 OUTPUT_FRAME = 10000
 
+PAI_NUM2ACT = [  1, 2, 3, 4, 5, 6, 7, 8, 9, \
+            11,12,13,14,15,16,17,18,19, \
+            21,22,23,24,25,26,27,28,29, \
+            31,32,33,34,35,36,37]
+PAI_ACT2NUM = [34, 0, 1, 2, 3, 4, 5, 6, 7, 8,\
+                34, 9,10,11,12,13,14,15,16,17,\
+                34,18,19,20,21,22,23,24,25,26,\
+                34,27,28,29,30,31,32,33,34]
 def act2PaiNumber(action):
     if action<9:
         return action+1
@@ -89,7 +97,7 @@ def score(index,sim,loop=100):
 
 # DQN内部で使われるニューラルネット
 class Q(Chain):
-    def __init__(self,state_num=INPUT_NODE*STATE_NUM):
+    def __init__(self,state_num=INPUT_NODE):
         super(Q,self).__init__(
              l1=L.Linear(state_num, 4096),  # stateがインプット
              l2=L.Linear(4096, 1024),
@@ -112,6 +120,9 @@ class Q(Chain):
         h1 = F.dropout(F.leaky_relu(self.l1(x)),train = train, ratio = ratio)
         h2 = F.dropout(F.leaky_relu(self.l2(h1)),train = train, ratio = ratio)
         h3 = F.dropout(F.leaky_relu(self.l3(h2)),train = train, ratio = ratio)
+        #h1 = F.leaky_relu(self.l1(x))
+        #h2 = F.leaky_relu(self.l2(h1))
+        #h3 = F.leaky_relu(self.l3(h2))
         y =  self.l4(h3)
         return y
     #'''
@@ -134,18 +145,20 @@ class DQNAgent():
         self.experienceMemory_local=[] # 経験メモリ（エピソードローカル）
         self.memPos = 0 #メモリのインデックス
         
-        self.batch_num = 100 # 学習に使うバッチサイズ
+        self.batch_num = 54 # 学習に使うバッチサイズ
         
         self.gamma = 0.9       # 割引率
         self.loss=0
         self.outloss = 0
 
+        self.monte_size = 4
+
         #self.total_reward_award=np.ones(100)*-1000 #100エピソード
 
-    def get_action_value(self, seq):
+    def get_action_value(self, seq, train = False,ratio = 5.0):
         # seq後の行動価値を返す
         x = Variable(cuda.to_gpu(np.hstack([seq]).astype(np.float32).reshape((1,-1))))
-        out = self.model.predict(x).data[0].copy()
+        out = self.model.predict(x=x,train = train,ratio = ratio).data[0].copy()
         for i in range(OUTPUT_NODE):
             if seq[i]<1.:
                 out[i] = -float("inf") # 選ばれちゃいけない系の選択肢は潰す
@@ -157,9 +170,9 @@ class DQNAgent():
         return self.actions[int(action_index)]
 
     def reduce_epsilon(self):
-        self.epsilon-=1.0/1000000
-        if self.epsilon<0:
-            self.epsilon = 0
+        self.epsilon-=1.0/100000
+        if self.epsilon<0.05:
+            self.epsilon = 0.05
 
     def get_epsilon(self):
         return self.epsilon
@@ -184,13 +197,13 @@ class DQNAgent():
             action= self.get_greedy_action(seq)
         return action
 
-    def experience_local(self,old_seq, action, reward, new_seq):
+    def experience_local(self,old_seq, action, reward, endflag, now_tehai, now_hou):
         #エピソードローカルな記憶
         #np.append(old_seq,actioin),
         #self.experienceMemory_local
-        self.experienceMemory_local.append( np.hstack([old_seq,action,reward,new_seq]) )
+        self.experienceMemory_local.append( np.hstack([old_seq,action,reward,endflag,now_tehai,now_hou]) )
 
-    def experience_global(self,total_reward):
+    def experience_global(self):
         """
         #グローバルな記憶
         #ベスト100に入る経験を取り込む
@@ -219,7 +232,29 @@ class DQNAgent():
         else:
             self.experienceMemory.append( x )
 
-    def update_model(self,old_seq, action, reward, new_seq):
+    def conv_state(self,dtehai,dhou):
+        # 一人麻雀なら状態は手牌+河で 手牌は本来順序によって変化するべき
+        out = np.zeros(INPUT_NODE)
+        for j in range(len(dtehai)):
+            if dtehai[j]>0:
+                out[j] = 1
+            if dtehai[j]>1:
+                out[j + (KIND_OF_PAI +   KIND_OF_PAI)*1] = 1
+            if dtehai[j]>2:
+                out[j + (KIND_OF_PAI +   KIND_OF_PAI)*2] = 1
+            if dtehai[j]>3:
+                out[j + (KIND_OF_PAI +   KIND_OF_PAI)*3] = 1
+
+            if dhou[j]>0:
+                out[j + KIND_OF_PAI] = 1
+            if dhou[j]>1:
+                out[j + KIND_OF_PAI + (KIND_OF_PAI +   KIND_OF_PAI)*1] = 1
+            if dhou[j]>2:
+                out[j + KIND_OF_PAI + (KIND_OF_PAI +   KIND_OF_PAI)*2] = 1
+            if dhou[j]>3:
+                out[j + KIND_OF_PAI + (KIND_OF_PAI +   KIND_OF_PAI)*3] = 1
+        return out 
+    def update_model(self):
         '''
         モデルを更新する
         '''
@@ -238,9 +273,37 @@ class DQNAgent():
             #[ seq..., action, reward, seq_new]
             a = batch[i,INPUT_NODE]
             r = batch[i, INPUT_NODE+1]
-            ai=int((a+1)/2) #±1 をindex(0,1)に
-            new_seq= batch[i,(INPUT_NODE+2):(INPUT_NODE*2+2)]
-            targets[i,ai]=( r+ self.gamma * np.max(self.get_action_value(new_seq)))
+            end = batch[i, INPUT_NODE+2]
+            next_Q = 0
+            if end==0:
+                dummy_seq = batch[i,(INPUT_NODE + 3):( INPUT_NODE + KIND_OF_PAI*2 + 3)]
+                random_pai = []
+                for pai_index in range(len(PAI_NUM2ACT)):
+                    for j in range(int(4-dummy_seq[pai_index]-dummy_seq[pai_index+KIND_OF_PAI])):
+                        random_pai.append(PAI_NUM2ACT[pai_index])
+                np.random.shuffle(random_pai)
+                if len(random_pai)>self.monte_size:
+                    random_pai = random_pai[0:self.monte_size] #important##########################################################################
+                for pai in random_pai:
+                    dummy_seq[pai]+=1
+                    dummy_new_seq = self.conv_state(dummy_seq[0:KIND_OF_PAI], dummy_seq[KIND_OF_PAI:KIND_OF_PAI*2])
+                    next_Q += np.max(self.get_action_value(dummy_new_seq))/len(random_pai)
+                    dummy_seq[pai]-=1
+                
+                if a!=0:
+                    targets[i,PAI_ACT2NUM[int(a)]]=( r+ self.gamma * next_Q)
+                else:
+                    assert "update_model() a=0"
+                    #targets[i,PAI_ACT2NUM[int(a)]]=( r )
+            else:
+                if a!=0:
+                    targets[i,PAI_ACT2NUM[int(a)]]=( r )
+                else:
+                    for pai in range(KIND_OF_PAI):
+                        targets[i,pai]=  ( r )
+            #if PAI_ACT2NUM[int(a)]>=34:
+            #    print str(i)+","+str(int(a))
+            
         t = Variable(xp.array(targets).reshape((self.batch_num,-1)).astype(xp.float32))
 
         # ネットの更新
@@ -303,6 +366,7 @@ class pendulumEnvironment():
             #print int(index)
             self.tehai[int(index)] += 1
         self.pais_position = 13
+        self.syanten = self.get_syanten()
 
     def get_reward(self):
         '''
@@ -346,6 +410,11 @@ class pendulumEnvironment():
             if dhou[j]>3:
                 out[j + KIND_OF_PAI + (KIND_OF_PAI +   KIND_OF_PAI)*3] = 1
         return out 
+    
+    def get_tehai(self):
+        return pais2act(self.tehai)
+    def get_hou(self):
+        return pais2act(self.hou)
 
     def update_state(self, action):
         '''
@@ -411,24 +480,28 @@ class simulator:
         self.env.reset(0,0)
 
         self.reset_seq()
-        total_reward=0
+        #total_reward=0
         
         # init seq
-        state = self.env.get_state()
-        self.push_seq(state)
+        #state = self.env.get_state()
+        #self.push_seq(state)
 
         # 一人麻雀では自摸回数は27回
         for i in range(27):
             # 麻雀の特性上エージェントの一人は行動前に環境が変化する
             self.env.tumo()
+            state = self.env.get_state()
+            self.push_seq(state)
 
             # 現在のstateからなるシーケンスを保存
             old_seq = self.seq.copy()
-            new_seq = self.seq.copy()
             action = 0
-            if self.env.get_syanten() == -1: ############################################################
+            if self.env.get_syanten() == -1:
                 agari = 1
                 reward = 1
+                # エピソードローカルなメモリに記憶する
+                if train:
+                    self.agent.experience_local(old_seq, action, reward, 1, self.env.get_tehai(), self.env.get_hou())
                 break
 
             # エージェントの行動を決める
@@ -437,15 +510,19 @@ class simulator:
             # 環境に行動を入力する
             self.env.update_state(action)
             reward=self.env.get_reward()
-            total_reward +=reward
+            #total_reward +=reward
 
             # 結果を観測してstateとシーケンスを更新する
-            state = self.env.get_state()
-            self.push_seq(state)
-            new_seq = self.seq.copy()
+            #state = self.env.get_state()
+            #self.push_seq(state)
+            #new_seq = self.seq.copy()
 
             # エピソードローカルなメモリに記憶する
-            self.agent.experience_local(old_seq, action, reward, new_seq)
+            if train:
+                if i!=26:
+                    self.agent.experience_local(old_seq, action, reward, 0, self.env.get_tehai(), self.env.get_hou())
+                else:
+                    self.agent.experience_local(old_seq, action, reward, 1, self.env.get_tehai(), self.env.get_hou())
 
             if enableLog:
                 self.log.append(np.hstack([old_seq[0], action, reward]))
@@ -457,16 +534,16 @@ class simulator:
                 time.sleep(0.01)
             '''
 
-        # エピソードローカルなメモリ内容をグローバルなメモリに移す
-        self.agent.experience_global(total_reward)
 
         if train:
+            # エピソードローカルなメモリ内容をグローバルなメモリに移す
+            self.agent.experience_global()
             # 学習用メモリを使ってモデルを更新する
-            self.agent.update_model(old_seq, action, reward, new_seq)
+            self.agent.update_model()
             self.agent.reduce_epsilon()
 
         if enableLog:
-            return total_reward,self.log
+            return agari,self.log
         return agari
         #return total_reward
 
@@ -522,7 +599,7 @@ if __name__ == '__main__':
         
         if i%OUTPUT_FRAME == 0:
             print "test%d"%i
-            if i%(OUTPUT_FRAME*100)==0:
+            if i%(OUTPUT_FRAME*10)==0 and i!=0:
                 score(i,sim,100000)
             else:
                 score(i,sim,0)
