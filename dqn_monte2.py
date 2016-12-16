@@ -99,10 +99,10 @@ def score(index,sim,loop=100):
 class Q(Chain):
     def __init__(self,state_num=INPUT_NODE):
         super(Q,self).__init__(
-            l1=L.Linear(state_num, 4096),  # stateがインプット
-            l2=L.Linear(4096, 1024), # 8192
-            l3=L.Linear(1024, 512), # 16384 -> 32768
-            l4=L.Linear(512, OUTPUT_NODE), # 出力2チャネル(Qvalue)がアウトプット
+             l1=L.Linear(state_num, 256),  # stateがインプット
+             l2=L.Linear(256, 64), # 8192
+             l3=L.Linear(64, 8), # 16384 -> 32768
+             l4=L.Linear(8, OUTPUT_NODE), # 出力2チャネル(Qvalue)がアウトプット
         )
     
     '''
