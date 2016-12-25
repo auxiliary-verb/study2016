@@ -145,13 +145,13 @@ class DQNAgent():
         self.experienceMemory_local=[] # 経験メモリ（エピソードローカル）
         self.memPos = 0 #メモリのインデックス
         
-        self.batch_num = 54 # 学習に使うバッチサイズ
+        self.batch_num = 27 # 学習に使うバッチサイズ
         
         self.gamma = 0.9       # 割引率
         self.loss=0
         self.outloss = 0
 
-        self.monte_size = 4
+        self.monte_size = 20
 
         #self.total_reward_award=np.ones(100)*-1000 #100エピソード
 

@@ -21,8 +21,8 @@ if gpu :
 else:
     xp = numpy
 '''
-np.random.seed(1033)# 0 1033 1631
-xp.random.seed(1033)#
+np.random.seed(1631)# 0 1033 1631
+xp.random.seed(1631)#
 
 # 牌の種類数
 KIND_OF_PAI = 9*3+4+3
