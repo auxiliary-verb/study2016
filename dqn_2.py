@@ -129,7 +129,7 @@ class Q(Chain):
 
 # DQNアルゴリズムにしたがって動作するエージェント
 class DQNAgent():
-    def __init__(self, args, epsilon=0.05):
+    def __init__(self, args, epsilon=0.99):
         self.model = Q()
         #model = L.Classifier(MLP(784, args.unit, 10))
         if args.gpu >= 0:
@@ -151,18 +151,17 @@ class DQNAgent():
         self.loss=0
         self.outloss = 0
 
-        self.monte_size = 20
+        self.monte_size = 4
 
         #self.total_reward_award=np.ones(100)*-1000 #100エピソード
 
     def get_action_value(self, seq, train = False,ratio = 5.0):
         # seq後の行動価値を返す
-        x = Variable(cuda.to_gpu(np.hstack([seq]).astype(np.float32).reshape((-1,1,INPUT_NODE))))
-        out = self.model.predict(x=x,train = train,ratio = ratio).data.copy()
-        for batch_index in range(len(out)):
-            for i in range(OUTPUT_NODE):
-                if seq[batch_index*INPUT_NODE+i]<1.:
-                    out[batch_index][i] = -float("inf") # 選ばれちゃいけない系の選択肢は潰す
+        x = Variable(cuda.to_gpu(np.hstack([seq]).astype(np.float32).reshape((1,-1))))
+        out = self.model.predict(x=x,train = train,ratio = ratio).data[0].copy()
+        for i in range(OUTPUT_NODE):
+            if seq[i]<1.:
+                out[i] = -float("inf") # 選ばれちゃいけない系の選択肢は潰す
         #print out
         return out
 
@@ -198,11 +197,11 @@ class DQNAgent():
             action= self.get_greedy_action(seq)
         return action
 
-    def experience_local(self,old_seq, action, reward, endflag, now_tehai, now_hou):
+    def experience_local(self,old_seq, action, reward, endflag, now_seq):
         #エピソードローカルな記憶
         #np.append(old_seq,actioin),
         #self.experienceMemory_local
-        self.experienceMemory_local.append( np.hstack([old_seq,action,reward,endflag,now_tehai,now_hou]) )
+        self.experienceMemory_local.append( np.hstack([old_seq,action,reward,endflag,now_seq]) )
 
     def experience_global(self):
         """
@@ -275,8 +274,10 @@ class DQNAgent():
             a = batch[i,INPUT_NODE]
             r = batch[i, INPUT_NODE+1]
             end = batch[i, INPUT_NODE+2]
-            next_Q = 0
             if end==0:
+                new_seq= batch[i,(INPUT_NODE + 3):( INPUT_NODE*2 + 3)]
+                targets[i,PAI_ACT2NUM[int(a)]]=( r+ self.gamma * np.max(self.get_action_value(new_seq)))
+                '''
                 dummy_seq = batch[i,(INPUT_NODE + 3):( INPUT_NODE + KIND_OF_PAI*2 + 3)]
                 random_pai = []
                 for pai_index in range(len(PAI_NUM2ACT)):
@@ -285,21 +286,19 @@ class DQNAgent():
                 np.random.shuffle(random_pai)
                 if len(random_pai)>self.monte_size:
                     random_pai = random_pai[0:self.monte_size] #important##########################################################################
-                dummy_new_seq = np.array( [])
                 for pai in random_pai:
                     dummy_seq[pai]+=1
-                    dummy_new_seq = np.append(dummy_new_seq,self.conv_state(dummy_seq[0:KIND_OF_PAI], dummy_seq[KIND_OF_PAI:KIND_OF_PAI*2]))
+                    dummy_new_seq = self.conv_state(dummy_seq[0:KIND_OF_PAI], dummy_seq[KIND_OF_PAI:KIND_OF_PAI*2])
+                    next_Q += np.max(self.get_action_value(dummy_new_seq))/len(random_pai)
                     dummy_seq[pai]-=1
-                outputs = self.get_action_value(dummy_new_seq)
-                #print type(outputs)
-                for j in range(len(outputs)):
-                    next_Q += np.max(outputs[j])/len(random_pai)
-                    
+                
                 if a!=0:
                     targets[i,PAI_ACT2NUM[int(a)]]=( r+ self.gamma * next_Q)
                 else:
                     assert "update_model() a=0"
                     #targets[i,PAI_ACT2NUM[int(a)]]=( r )
+                '''
+
             else:
                 if a!=0:
                     targets[i,PAI_ACT2NUM[int(a)]]=( r )
@@ -490,13 +489,17 @@ class simulator:
         # init seq
         #state = self.env.get_state()
         #self.push_seq(state)
-
+        flag = False
         # 一人麻雀では自摸回数は27回
         for i in range(27):
             # 麻雀の特性上エージェントの一人は行動前に環境が変化する
             self.env.tumo()
             state = self.env.get_state()
             self.push_seq(state)
+
+            # エピソードローカルなメモリに記憶する
+            if train and flag:
+                self.agent.experience_local(old_seq, action, reward, 0, self.seq.copy())    
 
             # 現在のstateからなるシーケンスを保存
             old_seq = self.seq.copy()
@@ -506,9 +509,9 @@ class simulator:
                 reward = 1
                 # エピソードローカルなメモリに記憶する
                 if train:
-                    self.agent.experience_local(old_seq, action, reward, 1, self.env.get_tehai(), self.env.get_hou())
+                    self.agent.experience_local(old_seq, action, reward, 1, old_seq)
                 break
-
+            flag = True
             # エージェントの行動を決める
             action = act2PaiNumber(self.agent.get_action(old_seq,train))
 
@@ -522,13 +525,7 @@ class simulator:
             #self.push_seq(state)
             #new_seq = self.seq.copy()
 
-            # エピソードローカルなメモリに記憶する
-            if train:
-                if i!=26:
-                    self.agent.experience_local(old_seq, action, reward, 0, self.env.get_tehai(), self.env.get_hou())
-                else:
-                    self.agent.experience_local(old_seq, action, reward, 1, self.env.get_tehai(), self.env.get_hou())
-
+            
             if enableLog:
                 self.log.append(np.hstack([old_seq[0], action, reward]))
             '''
@@ -539,6 +536,8 @@ class simulator:
                 time.sleep(0.01)
             '''
 
+        if train and flag and self.env.get_syanten() != -1:
+                self.agent.experience_local(old_seq, action, reward, 1, old_seq)
 
         if train:
             # エピソードローカルなメモリ内容をグローバルなメモリに移す
@@ -587,11 +586,9 @@ if __name__ == '__main__':
 
     test_highscore=0
 
-    serializers.load_npz('model_nonmonte.model', agent.model)
-
     fw=open("log.csv","w")
     tumo_cnt = 0
-    for i in xrange(30000000):
+    for i in xrange(500000):
         '''
         sys.stdout.write("\rtest%d"%i)
         sys.stdout.flush()
@@ -612,6 +609,8 @@ if __name__ == '__main__':
                 score(i,sim,0)
             print tumo_cnt
     print "test30000000"
-    score(i,sim,1000000)
-    print tumo_cnt
+    #score(i,sim,1000000)
+    #print tumo_cnt
+    serializers.save_npz('model_nonmonte.model', agent.model)
+    print "output model"
     fw.close

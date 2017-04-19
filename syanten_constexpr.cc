@@ -1,5 +1,8 @@
 
-constexpr
+constexpr Syanten(){
+	
+	
+}
 
 int Syanten::KokusiSyanten()
 {
