@@ -160,6 +160,34 @@ int Syanten::checkNormalSyanten()
 	return 8-ptm*2-ptt;
 }
 
+bool Syanten::checkAtama()
+{
+	int atamaresult=99;
+	int result=99;
+	int tmpresult=0;
+	for(int i=1;i<38;i++)
+	{
+		if(2 <= tehai[i])
+		{            
+			tehai[i] -= 2;
+			tmpresult=checkNormalSyanten()-1;
+			if(tmpresult < atamaresult){
+				atamaresult=tmpresult;
+			}
+			tehai[i] += 2;
+		}
+	}
+	
+	if(fuurosuu == 0){
+        tmpresult=checkNormalSyanten();
+		if(tmpresult < result){
+			result=tmpresult;
+		}
+	}
+
+	return atamaresult<result;
+}
+
 BOOST_PYTHON_MODULE(syanten)
 {
     using namespace boost::python;
@@ -169,6 +197,8 @@ BOOST_PYTHON_MODULE(syanten)
         .def("KokusiSyanten",	&Syanten::KokusiSyanten)
         .def("TiitoituSyanten",	&Syanten::TiitoituSyanten)
 
+        .def("check_atama",		&Syanten::checkAtama)
+        
         .def("set_tehai",		&Syanten::set_tehai)
         .def("set_fuurosuu",	&Syanten::set_fuurosuu)
         .def("clear",			&Syanten::clear)

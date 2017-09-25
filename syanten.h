@@ -36,6 +36,8 @@ public:
 	int KokusiSyanten();
 	int TiitoituSyanten();
 
+	bool checkAtama();
+
 	void set_tehai(boost::python::list t);
 	void set_fuurosuu(int a){fuurosuu=a;}
 	void clear();

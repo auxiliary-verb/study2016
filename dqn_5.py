@@ -118,7 +118,7 @@ class Q(Chain):
     def __call__(self,x,t,ratio=0.5):
         return F.mean_squared_error(self.predict(x,train=True,ratio = ratio),t)
 
-    def  predict(self,x,train=False, ratio = 0.5):
+    def predict(self,x,train=False, ratio = 0.5):
         #h1 = F.dropout(F.leaky_relu(self.l1(x)),train = train, ratio = ratio)
         #h2 = F.dropout(F.leaky_relu(self.l2(h1)),train = train, ratio = ratio)
         #h3 = F.dropout(F.leaky_relu(self.l3(h2)),train = train, ratio = ratio)
