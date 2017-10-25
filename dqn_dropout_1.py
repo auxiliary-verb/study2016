@@ -101,11 +101,11 @@ class Q(Chain):
     def __init__(self,state_num=INPUT_NODE):
         super(Q,self).__init__(
              l1=L.Linear(state_num, 1024),  # stateがインプット
-             l2=L.Linear(1024, 64), # 8192
-             l3=L.Linear(64, 8), # 16384 -> 32768
+             l2=L.Linear(1024, 128), # 8192
+             l3=L.Linear(128, 16), # 16384 -> 32768
              #l4=L.Linear(256, 64), # 8192
              #l5=L.Linear(64, 16), # 16384 -> 32768
-             l_out=L.Linear(8, OUTPUT_NODE), # 出力2チャネル(Qvalue)がアウトプット
+             l_out=L.Linear(16, OUTPUT_NODE), # 出力2チャネル(Qvalue)がアウトプット
         )
     
     '''
@@ -120,16 +120,17 @@ class Q(Chain):
         return F.mean_squared_error(self.predict(x,train=True,ratio = ratio),t)
 
     def  predict(self,x,train=False, ratio = 0.5):
-        #h1 = F.dropout(F.leaky_relu(self.l1(x)),train = train, ratio = ratio)
-        #h2 = F.dropout(F.leaky_relu(self.l2(h1)),train = train, ratio = ratio)
-        #h3 = F.dropout(F.leaky_relu(self.l3(h2)),train = train, ratio = ratio)
-        h = F.dropout(F.relu(self.l1(x)))
-        h = F.dropout(F.relu(self.l2(h)))
-        h = F.dropout(F.relu(self.l3(h)))
-        #h = F.leaky_relu(self.l4(h))
-        #h = F.leaky_relu(self.l5(h))
-        #h = F.leaky_relu(self.l6(h))
-        y =  self.l_out(h)
+        with chainer.using_config('train', train):
+            #h1 = F.dropout(F.leaky_relu(self.l1(x)),train = train, ratio = ratio)
+            #h2 = F.dropout(F.leaky_relu(self.l2(h1)),train = train, ratio = ratio)
+            #h3 = F.dropout(F.leaky_relu(self.l3(h2)),train = train, ratio = ratio)
+            h = F.dropout(F.leaky_relu(self.l1(x)), ratio = 0.2)
+            h = F.dropout(F.leaky_relu(self.l2(h)), ratio = 0.5)
+            h = F.dropout(F.leaky_relu(self.l3(h)), ratio = 0.5)
+            #h = F.leaky_relu(self.l4(h))
+            #h = F.leaky_relu(self.l5(h))
+            #h = F.leaky_relu(self.l6(h))
+            y =  self.l_out(h)
         return y
     #'''
 
@@ -151,7 +152,7 @@ class DQNAgent():
         self.experienceMemory_local=[] # 経験メモリ（エピソードローカル）
         self.memPos = 0 #メモリのインデックス
         
-        self.batch_num = 108 # 学習に使うバッチサイズ
+        self.batch_num = 216 # 学習に使うバッチサイズ
         
         self.gamma = 0.9       # 割引率
         self.loss=0
@@ -559,6 +560,7 @@ class simulator:
             # エピソードローカルなメモリ内容をグローバルなメモリに移す
             self.agent.experience_global()
             # 学習用メモリを使ってモデルを更新する
+            #for i in range():
             self.agent.update_model()
             self.agent.reduce_epsilon()
 
@@ -619,7 +621,7 @@ if __name__ == '__main__':
         
         if i%OUTPUT_FRAME == 0:
             print "test%d"%i
-            if i%(OUTPUT_FRAME*10)==0 and i!=0:
+            if i%(OUTPUT_FRAME*10)==0:
                 score(i,sim,1000)
             else:
                 score(i,sim,0)

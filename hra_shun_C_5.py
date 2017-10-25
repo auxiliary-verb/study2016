@@ -114,11 +114,11 @@ class HRA(Chain):
     def __init__(self,hidden = 10,state_num=INPUT_NODE):
         super(HRA,self).__init__(
              l1=L.Linear(state_num, hidden),  # stateがインプット
-             #l2=L.Linear(7, 64), # 8192
+             l2=L.Linear(hidden, 64), # 8192
              #l3=L.Linear(64, 8), # 16384 -> 32768
              #l4=L.Linear(256, 64), # 8192
              #l5=L.Linear(64, 16), # 16384 -> 32768
-             l_out=L.Linear(hidden, OUTPUT_NODE), # 出力2チャネル(Qvalue)がアウトプット
+             l_out=L.Linear(64, OUTPUT_NODE), # 出力2チャネル(Qvalue)がアウトプット
         )
     
     '''
@@ -133,16 +133,17 @@ class HRA(Chain):
         return F.mean_squared_error(self.predict(x,train=True,ratio = ratio),t)
 
     def  predict(self,x,train=False, ratio = 0.5):
-        #h1 = F.dropout(F.leaky_relu(self.l1(x)),train = train, ratio = ratio)
-        #h2 = F.dropout(F.leaky_relu(self.l2(h1)),train = train, ratio = ratio)
-        #h3 = F.dropout(F.leaky_relu(self.l3(h2)),train = train, ratio = ratio)
-        h = F.relu(self.l1(x))
-        #h = F.relu(self.l2(h))
-        #h = F.relu(self.l3(h))
-        #h = F.leaky_relu(self.l4(h))
-        #h = F.leaky_relu(self.l5(h))
-        #h = F.leaky_relu(self.l6(h))
-        y =  self.l_out(h)
+        with chainer.using_config('train', train):
+            #h1 = F.dropout(F.leaky_relu(self.l1(x)),train = train, ratio = ratio)
+            #h2 = F.dropout(F.leaky_relu(self.l2(h1)),train = train, ratio = ratio)
+            #h3 = F.dropout(F.leaky_relu(self.l3(h2)),train = train, ratio = ratio)
+            h = F.dropout(F.leaky_relu(self.l1(x)), ratio = 0.2)
+            h = F.dropout(F.leaky_relu(self.l2(h)), ratio = 0.5)
+            #h = F.relu(self.l3(h))
+            #h = F.leaky_relu(self.l4(h))
+            #h = F.leaky_relu(self.l5(h))
+            #h = F.leaky_relu(self.l6(h))
+            y =  self.l_out(h)
         return y
     #'''
 
